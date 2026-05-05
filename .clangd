@@ -45,12 +45,21 @@ CompileFlags:
     # Select the SAM3X8E device variant in the vendor headers
     - -D__SAM3X8E__
 
+    # C language standard — matches gcc default and allows 'register'
+    - -std=gnu11
+
     # Include paths (relative to sam3x8e/ project root)
     - -Isrc
     - -Ivendor/sam/include
     - -Ivendor/cmsis/include
 
-  # When compile_commands.json is present, its per-file flags take
-  # precedence over the Add list above.  The Add entries act as a
-  # baseline that fills gaps (e.g. files not in compile_commands.json).
-  CompilationDatabase: .
+---
+# Suppress all diagnostics for vendor headers.  These files are third-party
+# (ARM CMSIS / Atmel SAM) and are designed to be included transitively from a
+# device-specific header that pre-defines IRQn_Type, __NVIC_PRIO_BITS, etc.
+# When clangd opens them in isolation it lacks that context, producing
+# spurious errors that cascade into every file that includes them.
+If:
+  PathMatch: vendor/.*
+Diagnostics:
+  Suppress: '*'
