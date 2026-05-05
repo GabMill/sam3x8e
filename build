@@ -1,0 +1,161 @@
+#!/usr/bin/env sh
+# build — top-level build script for sam3x8e
+# Usage: ./build [--flash]
+#   --flash   Flash firmware to the Arduino Due after a successful build
+
+set -e
+
+usage() {
+    echo "Usage: $0 [--flash]"
+    echo "  --flash   Flash firmware to the Arduino Due after a successful build"
+    exit 1
+}
+
+DO_FLASH=0
+for arg in "$@"; do
+    case "$arg" in
+        --flash) DO_FLASH=1 ;;
+        *)       usage ;;
+    esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+has_cmd()            { command -v "$1" >/dev/null 2>&1; }
+has_docker_compose() { has_cmd docker && docker compose version >/dev/null 2>&1; }
+
+prompt_install() {
+    printf "The following dependencies are missing and need to be installed:\n"
+    printf "%b\n" "$1"
+    printf "Install them now? [y/N] "
+    read -r REPLY
+    case "$REPLY" in
+        [yY]|[yY][eE][sS]) return 0 ;;
+        *) echo "Aborted."; exit 1 ;;
+    esac
+}
+
+install_darwin() {
+    if ! has_cmd brew; then
+        echo "error: Homebrew is required. Install from https://brew.sh then re-run."
+        exit 1
+    fi
+
+    MISSING_DEPS=""
+    MISSING_LABELS=""
+
+    has_cmd docker     || { MISSING_DEPS="docker";      MISSING_LABELS="$MISSING_LABELS\n  Docker Desktop  (brew install --cask docker)"; }
+    has_docker_compose || MISSING_LABELS="$MISSING_LABELS\n  docker compose plugin  (open Docker Desktop to finish setup)"
+
+    if [ "$DO_FLASH" -eq 1 ]; then
+        has_cmd bossac || { MISSING_DEPS="$MISSING_DEPS bossac"; MISSING_LABELS="$MISSING_LABELS\n  bossac  (brew install bossac)"; }
+    fi
+
+    if [ -n "$MISSING_LABELS" ]; then
+        prompt_install "$MISSING_LABELS"
+        if ! has_cmd docker; then
+            brew install --cask docker
+            echo "NOTE: Open Docker Desktop to complete setup, then re-run ./build."
+            exit 0
+        fi
+        if ! has_docker_compose; then
+            echo "error: Docker Desktop doesn't appear to be running. Open it and try again."
+            exit 1
+        fi
+        has_cmd bossac || brew install bossac
+    fi
+}
+
+install_linux() {
+    MISSING_DEPS=""
+    PKGS=""
+
+    if has_cmd apt-get; then
+        if ! has_cmd docker;     then MISSING_DEPS="$MISSING_DEPS\n  docker.io";            PKGS="$PKGS docker.io"; fi
+        if ! has_docker_compose; then MISSING_DEPS="$MISSING_DEPS\n  docker-compose-plugin"; PKGS="$PKGS docker-compose-plugin"; fi
+        if [ "$DO_FLASH" -eq 1 ] && ! has_cmd bossac; then
+            MISSING_DEPS="$MISSING_DEPS\n  bossac"; PKGS="$PKGS bossac"
+        fi
+        if [ -n "$PKGS" ]; then
+            prompt_install "$MISSING_DEPS"
+            sudo apt-get update -qq
+            # shellcheck disable=SC2086
+            sudo apt-get install -y $PKGS
+        fi
+    elif has_cmd dnf; then
+        if ! has_cmd docker;     then MISSING_DEPS="$MISSING_DEPS\n  docker";                PKGS="$PKGS docker"; fi
+        if ! has_docker_compose; then MISSING_DEPS="$MISSING_DEPS\n  docker-compose-plugin"; PKGS="$PKGS docker-compose-plugin"; fi
+        if [ "$DO_FLASH" -eq 1 ] && ! has_cmd bossac; then
+            MISSING_DEPS="$MISSING_DEPS\n  bossac"; PKGS="$PKGS bossac"
+        fi
+        if [ -n "$PKGS" ]; then
+            prompt_install "$MISSING_DEPS"
+            # shellcheck disable=SC2086
+            sudo dnf install -y $PKGS
+        fi
+    elif has_cmd pacman; then
+        if ! has_cmd docker;     then MISSING_DEPS="$MISSING_DEPS\n  docker";         PKGS="$PKGS docker"; fi
+        if ! has_docker_compose; then MISSING_DEPS="$MISSING_DEPS\n  docker-compose"; PKGS="$PKGS docker-compose"; fi
+        if [ "$DO_FLASH" -eq 1 ] && ! has_cmd bossac; then
+            MISSING_DEPS="$MISSING_DEPS\n  bossac"; PKGS="$PKGS bossac"
+        fi
+        if [ -n "$PKGS" ]; then
+            prompt_install "$MISSING_DEPS"
+            # shellcheck disable=SC2086
+            sudo pacman -S --needed $PKGS
+        fi
+    else
+        echo "error: unsupported Linux distribution. Install Docker and (optionally) bossac manually."
+        exit 1
+    fi
+
+    if ! groups | grep -qw docker; then
+        echo ""
+        echo "NOTE: Your user is not in the 'docker' group. To run docker without sudo:"
+        echo "        sudo usermod -aG docker \$USER"
+        echo "      Log out and back in for the change to take effect."
+        echo ""
+    fi
+}
+
+OS="$(uname -s)"
+case "$OS" in
+    Darwin) install_darwin ;;
+    Linux)  install_linux ;;
+    *)
+        echo "error: unsupported OS '$OS'."
+        exit 1
+        ;;
+esac
+
+# Rebuild the Docker image only when files in docker/ have changed
+STAMP_FILE="docker/.build-stamp"
+
+docker_hash() {
+    if has_cmd sha256sum; then SHASUM="sha256sum"; else SHASUM="shasum -a 256"; fi
+    find docker/ -type f ! -name '.build-stamp' | sort | \
+        while IFS= read -r f; do cat "$f"; done | $SHASUM | cut -d' ' -f1
+}
+
+needs_rebuild() {
+    docker image inspect sam3x8e-build >/dev/null 2>&1 || return 0
+    [ ! -f "$STAMP_FILE" ] || [ "$(cat "$STAMP_FILE")" != "$(docker_hash)" ]
+}
+
+if needs_rebuild; then
+    docker compose -f docker/compose.yml build
+    docker_hash > "$STAMP_FILE"
+fi
+
+docker compose -f docker/compose.yml run --rm build
+
+# Flash via bossac — use the native USB port (not the programming port)
+if [ "$DO_FLASH" -eq 1 ]; then
+    case "$OS" in
+        Darwin) PORT="/dev/cu.usbmodem*" ;;
+        *)      PORT="/dev/ttyACM0" ;;
+    esac
+    echo "Flashing to $PORT ..."
+    bossac --port="$PORT" --write --verify --reset out/sam3x8e/firmware.bin
+fi

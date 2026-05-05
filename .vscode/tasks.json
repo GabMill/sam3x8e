@@ -1,0 +1,37 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build firmware",
+            "type": "shell",
+            "command": "./build",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build and flash firmware",
+            "type": "shell",
+            "command": "./build --flash",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Clean build artifacts",
+            "type": "shell",
+            "command": "docker compose -f docker/compose.yml run --rm build make -f make/Makefile clean",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Generate compile_commands.json",
+            "type": "shell",
+            "command": "docker compose -f docker/compose.yml run --rm build make -f make/Makefile compile_commands",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}

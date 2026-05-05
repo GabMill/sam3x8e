@@ -1,0 +1,13 @@
+services:
+  build:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BINUTILS_VERSION: "2.46.0"
+        GCC_VERSION: "16.1.0"
+    image: sam3x8e-build
+    platform: ${DOCKER_DEFAULT_PLATFORM:-linux/amd64}
+    volumes:
+      - ..:/root/env
+    command: make -f make/Makefile
